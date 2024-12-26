@@ -1,0 +1,87 @@
+from django.db import models
+from django.shortcuts import render, get_object_or_404
+from django.http import JsonResponse
+from django.views.decorators.csrf import csrf_exempt
+from django.urls import path
+import json
+
+# Models
+class MenuItem(models.Model):
+    name = models.CharField(max_length=100)
+    description = models.TextField()
+    price = models.DecimalField(max_digits=10, decimal_places=2)
+    inventory = models.IntegerField()
+
+    def __str__(self):
+        return self.name
+
+class Table(models.Model):
+    table_number = models.IntegerField(unique=True)
+    capacity = models.IntegerField()
+    is_reserved = models.BooleanField(default=False)
+
+    def __str__(self):
+        return f"Table {self.table_number}"
+
+class Order(models.Model):
+    table = models.ForeignKey(Table, on_delete=models.SET_NULL, null=True)
+    items = models.ManyToManyField(MenuItem, through='OrderItem')
+    created_at = models.DateTimeField(auto_now_add=True)
+    status = models.CharField(max_length=20, default="Pending")
+
+class OrderItem(models.Model):
+    order = models.ForeignKey(Order, on_delete=models.CASCADE)
+    menu_item = models.ForeignKey(MenuItem, on_delete=models.CASCADE)
+    quantity = models.IntegerField()
+
+# Views
+@csrf_exempt
+def menu_list(request):
+    if request.method == 'GET':
+        menu_items = MenuItem.objects.all().values()
+        return JsonResponse(list(menu_items), safe=False)
+
+@csrf_exempt
+def add_order(request):
+    if request.method == 'POST':
+        data = json.loads(request.body)
+        table_id = data.get('table_id')
+        items = data.get('items')  # List of {menu_item_id, quantity}
+        
+        table = get_object_or_404(Table, id=table_id)
+        if table.is_reserved:
+            return JsonResponse({"error": "Table is already reserved."}, status=400)
+        
+        table.is_reserved = True
+        table.save()
+
+        order = Order.objects.create(table=table)
+        for item in items:
+            menu_item = get_object_or_404(MenuItem, id=item['menu_item_id'])
+            if menu_item.inventory < item['quantity']:
+                return JsonResponse({"error": f"Not enough inventory for {menu_item.name}"}, status=400)
+            menu_item.inventory -= item['quantity']
+            menu_item.save()
+            OrderItem.objects.create(order=order, menu_item=menu_item, quantity=item['quantity'])
+
+        return JsonResponse({"message": "Order created successfully.", "order_id": order.id}, status=201)
+
+@csrf_exempt
+def table_status(request):
+    if request.method == 'GET':
+        tables = Table.objects.all().values()
+        return JsonResponse(list(tables), safe=False)
+
+@csrf_exempt
+def inventory_status(request):
+    if request.method == 'GET':
+        inventory = MenuItem.objects.all().values('name', 'inventory')
+        return JsonResponse(list(inventory), safe=False)
+
+# URLs
+urlpatterns = [
+    path('menu/', menu_list, name='menu_list'),
+    path('order/', add_order, name='add_order'),
+    path('tables/', table_status, name='table_status'),
+    path('inventory/', inventory_status, name='inventory_status'),
+]
